@@ -1,136 +1,173 @@
-use regex::Regex;
-use std::{
-    env::{self},
-    fs,
-};
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 
-fn provide_error(line_num: i32, error_message: &str) {
-    println!("Error at line {}: {}", line_num, error_message);
-    panic!()
-}
-#[derive(Debug)]
-enum TokenType {
-    // Single-character tokens.
-    LEFT_PAREN,
-    RIGHT_PAREN,
-    LEFT_BRACE,
-    RIGHT_BRACE,
-    COMMA,
-    DOT,
-    MINUS,
-    PLUS,
-    COLON,
-    SLASH,
-    STAR,
-
-    // One or two character tokens.
-    BANG,
-    BANG_EQUAL,
-    EQUAL,
-    EQUAL_EQUAL,
-    GREATER,
-    GREATER_EQUAL,
-    LESS,
-    LESS_EQUAL,
-
-    // Literals.
-    IDENTIFIER,
-    STRING,
-    NUMBER,
-
-    // Keywords.
-    AND,
-    ELSE,
-    FALSE,
-    FOR,
-    IF,
-    OR,
-    PRINT,
-    RETURN,
-    TRUE,
-    WHILE,
-    DEF,
-
-    EOF,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Keyword {
+    Def,
+    If,
+    Then,
+    End,
+    And,
+    Or,
+    Not,
+    Return,
 }
 
-#[derive(Debug)]
-struct Token {
-    lexeme: String,
-    token_type: TokenType,
-    line: i32,
-    col: i32,
-}
-impl Token {
-    fn new(lexeme: String, token_type: TokenType, line: i32, col: i32) -> Self {
-        Token {
-            lexeme,
-            token_type,
-            line,
-            col,
-        }
-    }
-}
-struct LexicalAnalyzer {
-    source: String,
-    tokens: Vec<Token>,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Delimiter {
+    LeftParenthesis,
+    RightParenthesis,
+    LeftBrace,
+    RightBrace,
+    Colon,
+    Comma,
 }
 
-impl LexicalAnalyzer {
-    fn new(source: String) -> Self {
-        LexicalAnalyzer {
-            source,
-            tokens: Vec::new(),
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Literal {
+    Integer(i64),
+    Character(char),
+}
+#[derive(Debug, Clone,Copy, PartialEq, Eq, Hash)]
+enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Not,
+    Equal,
+    LessThan,
+    GreaterThan,
+}
+#[derive(Debug, Clone,Copy, PartialEq, Eq, Hash)]
+enum UnaryOperator {
+    Not,
+    Negate,
+}
+#[derive(Debug, Clone,Copy, PartialEq, Eq, Hash)]
+enum Operator {
+    BinaryOperator(BinaryOperator),
+    UnaryOperator(UnaryOperator),
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Token {
+    Keyword(Keyword),
+    Identifier(String),
+    Delimiter(Delimiter),
+    Operator(Operator),
+    Literal(Literal),
+    EndOfFile,
+}
 
-    fn tokenize(&mut self) {
-        let lines: Vec<String> = self.source.lines().map(|line| line.to_string()).collect();
-        for (line_num, line) in lines.iter().enumerate() {
-            for (col_num, character) in line.chars().enumerate() {
-                match character {
-                    '(' => self.add_token(character, TokenType::LEFT_PAREN, line_num, col_num),
-                    ')' => self.add_token(character, TokenType::RIGHT_PAREN, line_num, col_num),
-                    '{' => self.add_token(character, TokenType::LEFT_BRACE, line_num, col_num),
-                    '}' => self.add_token(character, TokenType::RIGHT_BRACE, line_num, col_num),
-                    ',' => self.add_token(character, TokenType::COMMA, line_num, col_num),
-                    ':' => self.add_token(character, TokenType::COLON, line_num, col_num),
-                    '+' => self.add_token(character, TokenType::PLUS, line_num, col_num),
-                    '-' => self.add_token(character, TokenType::MINUS, line_num, col_num),
-                    '*' => self.add_token(character, TokenType::STAR, line_num, col_num),
-                    _ => provide_error(line_num.try_into().unwrap(), "Invalid character"),
-                }
+const KEYWORD_MAP: Lazy<HashMap<&'static str, Keyword>> = Lazy::new(|| {
+    let mut map = HashMap::new();
+    map.insert("def", Keyword::Def);
+    map.insert("if", Keyword::If);
+    map.insert("then", Keyword::Then);
+    map.insert("end", Keyword::End);
+    map.insert("and", Keyword::And);
+    map.insert("or", Keyword::Or);
+    map.insert("not", Keyword::Not);
+    map.insert("return", Keyword::Return);
+    map
+});
+const OPERATOR_MAP: Lazy<HashMap<char, BinaryOperator>> = Lazy::new(|| {
+    let mut map = HashMap::new();
+    map.insert('+', BinaryOperator::Add);
+    map.insert('-', BinaryOperator::Subtract);
+    map.insert('*', BinaryOperator::Multiply);
+    map.insert('/', BinaryOperator::Divide);
+    map.insert('%', BinaryOperator::Modulo);
+    map.insert('!', BinaryOperator::Not);
+    map.insert('=', BinaryOperator::Equal);
+    map.insert('<', BinaryOperator::LessThan);
+    map.insert('>', BinaryOperator::GreaterThan);
+    map
+});
+const UNARY_OPERATOR_MAP: Lazy<HashMap<char, UnaryOperator>> = Lazy::new(|| {
+    let mut map = HashMap::new();
+    map.insert('!', UnaryOperator::Not);
+    map.insert('-', UnaryOperator::Negate);
+    map
+});
+
+fn parse_token(source: &str) -> (Token, &str) {
+    // Returns token, remainder
+    let source = source.trim_start();
+    let Some(char) = source.chars().next() else {
+        // No more characters, what do we return?
+        return (Token::EndOfFile, "");
+    };
+
+    match char {
+        '_' | 'a'..='z' | 'A'..='Z' => parse_keyword_or_identifier(source),
+        '0'..='9' => parse_number_literal(source),
+        '(' => (Token::Delimiter(Delimiter::LeftParenthesis), &source[1..]),
+        ')' => (Token::Delimiter(Delimiter::RightParenthesis), &source[1..]),
+        '{' => (Token::Delimiter(Delimiter::LeftBrace), &source[1..]),
+        '}' => (Token::Delimiter(Delimiter::RightBrace), &source[1..]),
+        ':' => (Token::Delimiter(Delimiter::Colon), &source[1..]),
+        ',' => (Token::Delimiter(Delimiter::Comma), &source[1..]),
+        _ => {
+            if let Some(operator) = OPERATOR_MAP.get(&char) {
+                (Token::Operator(Operator::BinaryOperator(*operator)), &source[1..])
+            } else if let Some(operator) = UNARY_OPERATOR_MAP.get(&char) {
+                (Token::Operator(Operator::UnaryOperator(*operator)), &source[1..])
+            } else {
+                panic!("unknown token at start of {:?}", source);
             }
         }
     }
-    fn add_token(&mut self, lexeme: char, token_type: TokenType, line_num: usize, col_num: usize) {
-        self.tokens.push(Token::new(
-            lexeme.to_string(),
-            token_type,
-            line_num.try_into().unwrap(),
-            col_num.try_into().unwrap(),
-        ));
-    }
-    fn get_tokens(&self) -> &[Token] {
-        &self.tokens
+}
+
+fn parse_keyword_or_identifier(source: &str) -> (Token, &str) {
+    debug_assert!(matches!(
+        source.chars().next(),
+        Some('_' | 'a'..='z' | 'A'..='Z')
+    ));
+
+    let mut characters_after_identifier = source
+        .char_indices()
+        .skip_while(|(_, c)| matches!(c, '_' | 'a'..='z' | 'A'..='Z' | '0'..='9'));
+    let (identifier, remainder) = match characters_after_identifier.next() {
+        None => (source, ""),
+        Some((index_after, _)) => source.split_at(index_after),
+    };
+    let token = match KEYWORD_MAP.get(identifier) {
+        Some(&keyword) => Token::Keyword(keyword),
+        None => Token::Identifier(identifier.to_string()),
+    };
+    (token, remainder)
+}
+
+fn parse_number_literal(source: &str) -> (Token, &str) {
+    debug_assert!(matches!(source.chars().next(), Some('0'..='9')));
+    let mut character_after_literal = source
+        .char_indices()
+        .skip_while(|(_, c)| matches!(c, '0'..='9'));
+    let (literal, remainder) = match character_after_literal.next() {
+        None => (source, ""),
+        Some((index_after, _)) => source.split_at(index_after),
+    };
+    (Token::Literal(Literal::Integer(literal.parse::<i64>().unwrap())), remainder)
+}
+
+fn tokenize(source: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut remainder = source;
+    loop {
+        let (token, next_remainder) = parse_token(remainder);
+        if token == Token::EndOfFile {
+            return tokens;
+        }
+        tokens.push(token);
+        remainder = next_remainder;
     }
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        println!("Please provide a file name as a command-line argument.");
-        return;
-    }
-    let file_name = &args[1];
-    let contents = match fs::read_to_string(file_name) {
-        Ok(contents) => contents,
-        Err(error) => {
-            println!("Error reading file: {}", error);
-            return;
-        }
-    };
-    let mut lex_analyzer = LexicalAnalyzer::new(contents.to_string());
-    lex_analyzer.tokenize();
-    print!("{:?}", lex_analyzer.get_tokens());
+    let tokens = tokenize("def add(x, y): return 5123 + x + y");
+    println!("{tokens:?}");
+    println!("Hello, world!");
 }
